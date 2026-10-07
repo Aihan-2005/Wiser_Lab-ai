@@ -4,80 +4,96 @@ from typing import List
 import yaml
 
 
-@dataclass
+@dataclass(frozen=True)
 class PathsConfig:
     videos: Path
     poses: Path
     subtitles_raw: Path
     subtitles_gt: Path
+    segmentation_gt: Path
     video_ids: Path
     segmentation_output: Path
-    alignment_output: Path
+    reports: Path
 
 
-@dataclass
+@dataclass(frozen=True)
+class PoseConfig:
+    format: str = "mediapipe"
+    model_complexity: int = 2
+    smooth_landmarks: bool = False
+    refine_face_landmarks: bool = True
+    overwrite: bool = False
+
+
+@dataclass(frozen=True)
 class ElanConfig:
     sign_tiers: List[str]
-    aligned_subtitle_tier: str = "SUBTITLE_SHIFTED"
+    gt_sign_tiers: List[str]
 
 
-@dataclass
+@dataclass(frozen=True)
 class SegmentationConfig:
-    model: str
+    model: str = "model_E4s-1.pth"
     sign_b_threshold: int = 30
     sign_o_threshold: int = 50
-    num_workers: int = 1
     overwrite: bool = False
 
 
-@dataclass
-class AlignmentConfig:
-    duration_penalty_weight: float = 1.0
-    gap_penalty_weight: float = 5.0
-    max_gap_seconds: float = 10.0
-    candidate_window_size: int = 50
-    pre_shift_start_seconds: float = 0.0
-    pre_shift_end_seconds: float = 0.0
-    post_shift_start_seconds: float = 0.0
-    post_shift_end_seconds: float = 0.0
-    similarity_weight: float = 0.0
-    write_updated_eaf: bool = True
-    overwrite: bool = False
+@dataclass(frozen=True)
+class SegmentationEvalConfig:
+    iou_thresholds: List[float]
+    boundary_tolerance_ms: List[int]
+    tune_b_values: List[int]
+    tune_o_values: List[int]
+    primary_iou_threshold: float = 0.50
 
 
-@dataclass
+@dataclass(frozen=True)
 class AppConfig:
     paths: PathsConfig
+    pose: PoseConfig
     elan: ElanConfig
     segmentation: SegmentationConfig
-    alignment: AlignmentConfig
-
-
-def _pathify(d: dict) -> PathsConfig:
-    return PathsConfig(**{k: Path(v) for k, v in d.items()})
+    segmentation_eval: SegmentationEvalConfig
 
 
 def load_config(path: str | Path) -> AppConfig:
-    with open(path, "r", encoding="utf-8") as f:
+    path = Path(path)
+    with path.open("r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
     return AppConfig(
-        paths=_pathify(raw["paths"]),
-        elan=ElanConfig(**raw.get("elan", {})),
+        paths=PathsConfig(**{k: Path(v) for k, v in raw["paths"].items()}),
+        pose=PoseConfig(**raw.get("pose", {})),
+        elan=ElanConfig(**raw["elan"]),
         segmentation=SegmentationConfig(**raw["segmentation"]),
-        alignment=AlignmentConfig(**raw["alignment"]),
+        segmentation_eval=SegmentationEvalConfig(**raw["segmentation_eval"]),
     )
+
+
+def read_video_ids(path: Path) -> list[str]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def model_tag(model: str) -> str:
     stem = Path(model).stem
-    if stem.startswith("model_"):
-        stem = stem[len("model_"):]
-    return stem
+    return stem[len("model_"):] if stem.startswith("model_") else stem
+
+
+def segmentation_run_name(model: str, b: int, o: int) -> str:
+    return f"{model_tag(model)}_{b}_{o}"
 
 
 def segmentation_subdir(cfg: AppConfig) -> Path:
     s = cfg.segmentation
-    return cfg.paths.segmentation_output / (
-        f"{model_tag(s.model)}_{s.sign_b_threshold}_{s.sign_o_threshold}"
+    return cfg.paths.segmentation_output / segmentation_run_name(
+        s.model,
+        s.sign_b_threshold,
+        s.sign_o_threshold,
     )

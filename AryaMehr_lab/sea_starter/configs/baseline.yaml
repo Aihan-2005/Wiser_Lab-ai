@@ -3,33 +3,39 @@ paths:
   poses: data/poses
   subtitles_raw: data/subtitles_raw
   subtitles_gt: data/subtitles_gt
+  segmentation_gt: data/segmentation_gt
   video_ids: data/video_ids.txt
   segmentation_output: outputs/segmentation
-  alignment_output: outputs/aligned_subtitles
+  reports: outputs/reports
+
+pose:
+  format: mediapipe
+  model_complexity: 2
+  smooth_landmarks: false
+  refine_face_landmarks: true
+  overwrite: false
 
 elan:
   sign_tiers:
     - SIGN
     - GLOSS
     - ZEI_GLOSS
-  aligned_subtitle_tier: SUBTITLE_SHIFTED
+  gt_sign_tiers:
+    - SIGN_GT
+    - SIGN
+    - GLOSS
+    - ZEI_GLOSS
 
 segmentation:
+
   model: model_E4s-1.pth
   sign_b_threshold: 30
   sign_o_threshold: 50
-  num_workers: 1
   overwrite: false
 
-alignment:
-  duration_penalty_weight: 1.0
-  gap_penalty_weight: 5.0
-  max_gap_seconds: 10.0
-  candidate_window_size: 50
-  pre_shift_start_seconds: 0.0
-  pre_shift_end_seconds: 0.0
-  post_shift_start_seconds: 0.0
-  post_shift_end_seconds: 0.0
-  similarity_weight: 0.0
-  write_updated_eaf: true
-  overwrite: false
+segmentation_eval:
+  iou_thresholds: [0.10, 0.25, 0.50]
+  boundary_tolerance_ms: [100, 200, 400]
+  tune_b_values: [20, 30, 40, 50, 60, 70]
+  tune_o_values: [30, 40, 50, 60, 70]
+  primary_iou_threshold: 0.50

@@ -5,12 +5,12 @@ from persian_sea.segmentation.runner import segment_all
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Run the SEA-compatible E4s segmentation baseline."
+    )
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
-
-    cfg = load_config(args.config)
-    segment_all(cfg)
+    segment_all(load_config(args.config))
 
 
 if __name__ == "__main__":
