@@ -11,11 +11,19 @@ class PathsConfig:
     subtitles_raw: Path
     subtitles_gt: Path
     segmentation_gt: Path
+
     video_ids: Path
+    train_video_ids: Path
+    val_video_ids: Path
+    test_video_ids: Path
+
     segmentation_output: Path
     alignment_output: Path
     reports: Path
+
     feature_cache: Path
+    text_feature_cache: Path
+    checkpoints: Path
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,58 @@ class ScannerConfig:
 
 
 @dataclass(frozen=True)
+class SemanticConfig:
+    text_model: str = "BAAI/bge-m3"
+    text_device: str = "auto"
+    text_amp: bool = True
+    text_batch_size: int = 16
+    text_max_length: int = 256
+    text_cache_dtype: str = "float16"
+    overwrite_text_cache: bool = False
+
+    embedding_dim: int = 512
+
+    search_radius_seconds: float = 6.0
+    min_candidate_segments: int = 8
+    max_candidate_segments: int = 48
+
+    max_span_segments: int = 16
+    max_span_seconds: float = 14.0
+
+    align_temperature: float = 0.07
+    temporal_prior_weight: float = 0.35
+    temporal_sigma_seconds: float = 3.0
+    duration_prior_weight: float = 0.25
+
+    mil_temperature: float = 0.10
+    contrastive_temperature: float = 0.07
+    supervised_iou_temperature: float = 0.10
+
+    global_top_k: int = 8
+    overlap_penalty: float = 2.0
+    gap_change_penalty: float = 0.15
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    device: str = "auto"
+    amp: bool = True
+    seed: int = 42
+    batch_size: int = 8
+    num_workers: int = 0
+    epochs: int = 20
+
+    learning_rate: float = 2e-4
+    weight_decay: float = 1e-2
+    grad_clip_norm: float = 1.0
+
+    contrastive_weight: float = 1.0
+    supervised_weight: float = 1.0
+
+    save_name: str = "semantic_aligner.pt"
+
+
+@dataclass(frozen=True)
 class AlignmentConfig:
     duration_penalty_weight: float = 1.0
     gap_penalty_weight: float = 5.0
@@ -96,6 +156,8 @@ class AppConfig:
     segmentation: SegmentationConfig
     segmentation_eval: SegmentationEvalConfig
     scanner: ScannerConfig
+    semantic: SemanticConfig
+    training: TrainingConfig
     alignment: AlignmentConfig
 
 
@@ -114,6 +176,8 @@ def load_config(path: str | Path) -> AppConfig:
         segmentation=SegmentationConfig(**raw["segmentation"]),
         segmentation_eval=SegmentationEvalConfig(**raw["segmentation_eval"]),
         scanner=ScannerConfig(**raw.get("scanner", {})),
+        semantic=SemanticConfig(**raw.get("semantic", {})),
+        training=TrainingConfig(**raw.get("training", {})),
         alignment=AlignmentConfig(**raw.get("alignment", {})),
     )
 

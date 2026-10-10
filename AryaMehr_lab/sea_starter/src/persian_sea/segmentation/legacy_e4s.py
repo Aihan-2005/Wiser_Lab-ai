@@ -14,14 +14,7 @@ class LegacyInference:
 
 
 class LegacyE4sAdapter:
-    """
-    Adapter for the 2023/bsl segmentation implementation used by SEA.
-
-    It isolates the research dependency and lets us:
-      1) run the neural network once per video;
-      2) decode the same logits with many B/O threshold pairs;
-      3) later swap in a newer segmenter without changing evaluation code.
-    """
+ 
 
     def __init__(self, model_name_or_path: str = "model_E4s-1.pth"):
         self.model_name_or_path = model_name_or_path
@@ -49,13 +42,13 @@ class LegacyE4sAdapter:
     def _resolve_model_path(self) -> str:
         model = Path(self.model_name_or_path)
 
-        # Explicit filesystem path.
+
         if model.is_absolute() or model.parent != Path("."):
             if not model.exists():
                 raise FileNotFoundError(model)
             return str(model.resolve())
 
-        # Packaged checkpoint from the pinned bsl package.
+
         spec = importlib.util.find_spec("sign_language_segmentation")
         if spec is None or spec.origin is None:
             raise RuntimeError("sign_language_segmentation is not installed")
@@ -114,7 +107,7 @@ class LegacyE4sAdapter:
             start_frame = int(item["start"])
             end_frame = int(item["end"])
 
-            # Match upstream EAF conversion behavior.
+
             if end_frame <= start_frame:
                 end_frame = start_frame + 1
 

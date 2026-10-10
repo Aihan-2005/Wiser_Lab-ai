@@ -29,6 +29,7 @@ def _greedy_iou_match(
     used_gold: set[int] = set()
     matches: list[tuple[int, int, float]] = []
 
+
     for score, pi, gi in candidates:
         if pi in used_pred or gi in used_gold:
             continue
