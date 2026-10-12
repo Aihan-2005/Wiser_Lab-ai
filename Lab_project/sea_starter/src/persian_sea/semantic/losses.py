@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import math
 import torch
 import torch.nn.functional as F
-
 from persian_sea.semantic.candidates import interval_iou
 
 
@@ -11,9 +11,13 @@ def mil_bag_score(
     span_vectors: torch.Tensor,
     mil_temperature: float,
 ) -> torch.Tensor:
-    similarities = span_vectors @ text_vector
+
+
+    if span_vectors.ndim != 2 or span_vectors.size(0) == 0:
+        raise ValueError("span_vectors must be a nonempty [N,D] tensor")
     tau = max(float(mil_temperature), 1e-4)
-    return tau * torch.logsumexp(similarities / tau, dim=0)
+    sims = span_vectors @ text_vector
+    return tau * (torch.logsumexp(sims / tau, dim=0) - math.log(sims.numel()))
 
 
 def contrastive_bag_loss(
@@ -22,38 +26,57 @@ def contrastive_bag_loss(
     video_ids: list[str],
     mil_temperature: float,
     contrastive_temperature: float,
+    rough_start: torch.Tensor | None = None,
+    rough_end: torch.Tensor | None = None,
+    same_video_min_distance_seconds: float = 20.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Text i should retrieve visual bag i.
 
-    Off-diagonal samples from the same source video are masked rather than
-    treated as hard negatives, reducing false negatives among neighbouring
-    subtitles in one episode.
-    """
+
     B = text_vectors.shape[0]
-    matrix = text_vectors.new_empty((B, B))
+    if B != len(sample_outputs) or B != len(video_ids):
+        raise ValueError("Batch metadata length mismatch")
+    if B < 2:
+        zero = text_vectors.sum() * 0.0
+        return zero, text_vectors.new_zeros((B, B))
 
+    matrix = torch.stack([
+        torch.stack([
+            mil_bag_score(text_vectors[i], sample_outputs[j].vectors, mil_temperature)
+            for j in range(B)
+        ])
+        for i in range(B)
+    ])
+
+    allowed = torch.ones((B, B), dtype=torch.bool, device=matrix.device)
     for i in range(B):
         for j in range(B):
-            matrix[i, j] = mil_bag_score(
-                text_vectors[i],
-                sample_outputs[j].vectors,
-                mil_temperature,
+            if i == j or video_ids[i] != video_ids[j]:
+                continue
+            if rough_start is None or rough_end is None:
+                allowed[i, j] = False
+                continue
+
+            gap = max(
+                0.0,
+                float((rough_start[j] - rough_end[i]).item()),
+                float((rough_start[i] - rough_end[j]).item()),
             )
-
-    # Mask same-video off-diagonal entries.
-    for i in range(B):
-        for j in range(B):
-            if i != j and video_ids[i] == video_ids[j]:
-                matrix[i, j] = -1e4
+            allowed[i, j] = gap >= same_video_min_distance_seconds
 
     logits = matrix / max(float(contrastive_temperature), 1e-4)
+    logits = logits.masked_fill(~allowed, -1e4)
     target = torch.arange(B, device=logits.device)
 
-    loss_t2v = F.cross_entropy(logits, target)
-    loss_v2t = F.cross_entropy(logits.T, target)
 
-    return 0.5 * (loss_t2v + loss_v2t), matrix.detach()
+    informative = allowed.sum(dim=1) > 1
+    informative_columns = allowed.sum(dim=0) > 1
+    terms = []
+    if informative.any():
+        terms.append(F.cross_entropy(logits[informative], target[informative]))
+    if informative_columns.any():
+        terms.append(F.cross_entropy(logits.T[informative_columns], target[informative_columns]))
+    loss = torch.stack(terms).mean() if terms else matrix.sum() * 0.0
+    return loss, matrix.detach()
 
 
 def supervised_span_loss(
@@ -62,54 +85,32 @@ def supervised_span_loss(
     gt_end: torch.Tensor,
     iou_temperature: float,
 ) -> tuple[torch.Tensor, int]:
+
+
     losses = []
-    supervised_count = 0
     tau = max(float(iou_temperature), 1e-4)
-
     for i, output in enumerate(sample_outputs):
-        if not (
-            torch.isfinite(gt_start[i])
-            and torch.isfinite(gt_end[i])
-        ):
+        if not (bool(torch.isfinite(gt_start[i])) and bool(torch.isfinite(gt_end[i]))):
             continue
-
-        gs = float(gt_start[i].item())
-        ge = float(gt_end[i].item())
-
+        gs, ge = float(gt_start[i].item()), float(gt_end[i].item())
+        if not (0 <= gs < ge):
+            continue
         ious = torch.tensor(
-            [
-                interval_iou(
-                    span.start_time,
-                    span.end_time,
-                    gs,
-                    ge,
-                )
-                for span in output.spans
-            ],
-            device=output.final_scores.device,
+            [interval_iou(s.start_time, s.end_time, gs, ge) for s in output.spans],
             dtype=output.final_scores.dtype,
+            device=output.final_scores.device,
         )
+        positive = ious > 0
+        if not positive.any():
 
-        if float(ious.max().item()) <= 0.0:
-            # If segmentation/candidate search misses the GT, supervise the
-            # closest span midpoint rather than creating a zero target.
-            gt_mid = (gs + ge) / 2.0
-            mids = torch.tensor(
-                [span.midpoint for span in output.spans],
-                device=ious.device,
-                dtype=ious.dtype,
-            )
-            target = torch.zeros_like(ious)
-            target[torch.argmin(torch.abs(mids - gt_mid))] = 1.0
-        else:
-            target = torch.softmax(ious / tau, dim=0)
-
-        log_prob = torch.log_softmax(output.final_scores, dim=0)
+            continue
+        target = torch.zeros_like(ious)
+        target[positive] = torch.softmax(ious[positive] / tau, dim=0)
+        log_prob = F.log_softmax(output.final_scores, dim=0)
         losses.append(-(target * log_prob).sum())
-        supervised_count += 1
 
     if not losses:
-        zero = gt_start.new_tensor(0.0)
-        return zero, 0
 
-    return torch.stack(losses).mean(), supervised_count
+        zero = sum((o.final_scores.sum() * 0.0 for o in sample_outputs), gt_start.new_tensor(0.0))
+        return zero, 0
+    return torch.stack(losses).mean(), len(losses)

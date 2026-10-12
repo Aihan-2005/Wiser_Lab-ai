@@ -5,54 +5,42 @@ import numpy as np
 
 
 def select_candidate_indices(
-    starts: np.ndarray,
-    ends: np.ndarray,
-    rough_start: float,
-    rough_end: float,
-    radius: float,
-    min_candidates: int,
-    max_candidates: int,
+    starts: np.ndarray, ends: np.ndarray,
+    rough_start: float, rough_end: float, radius: float,
+    min_candidates: int, max_candidates: int,
 ) -> np.ndarray:
 
 
-    
+
     starts = np.asarray(starts, dtype=np.float64)
     ends = np.asarray(ends, dtype=np.float64)
-
-    if len(starts) != len(ends) or len(starts) == 0:
-        raise ValueError("Invalid segment timestamp arrays.")
+    if starts.ndim != 1 or ends.ndim != 1 or len(starts) != len(ends) or not len(starts):
+        raise ValueError("Invalid segment timestamp arrays")
+    if not np.all(np.diff(starts) >= 0) or np.any(ends <= starts):
+        raise ValueError("Segments must be sorted and have positive duration")
+    if not (0 <= rough_start < rough_end) or radius < 0:
+        raise ValueError("Invalid weak subtitle interval or search radius")
+    if not (1 <= min_candidates <= max_candidates):
+        raise ValueError("Need 1 <= min_candidates <= max_candidates")
 
     mids = (starts + ends) / 2.0
-    cue_mid = (rough_start + rough_end) / 2.0
-
-    lo_time = rough_start - radius
-    hi_time = rough_end + radius
-
+    cue_mid = (rough_start + rough_end) * 0.5
+    lo_time, hi_time = rough_start - radius, rough_end + radius
     lo = int(np.searchsorted(mids, lo_time, side="left"))
     hi = int(np.searchsorted(mids, hi_time, side="right"))
-
     lo = max(0, min(lo, len(mids) - 1))
     hi = max(lo + 1, min(hi, len(mids)))
 
-
-
     if hi - lo < min_candidates:
         center = int(np.argmin(np.abs(mids - cue_mid)))
-        half = min_candidates // 2
-        lo = max(0, center - half)
+        lo = max(0, center - min_candidates // 2)
         hi = min(len(mids), lo + min_candidates)
         lo = max(0, hi - min_candidates)
-
-
     if hi - lo > max_candidates:
-        local = mids[lo:hi]
-        center_local = int(np.argmin(np.abs(local - cue_mid)))
-        center = lo + center_local
-        half = max_candidates // 2
-        lo = max(0, center - half)
+        center = int(np.argmin(np.abs(mids[lo:hi] - cue_mid))) + lo
+        lo = max(0, center - max_candidates // 2)
         hi = min(len(mids), lo + max_candidates)
         lo = max(0, hi - max_candidates)
-
     return np.arange(lo, hi, dtype=np.int64)
 
 
@@ -60,7 +48,6 @@ def select_candidate_indices(
 class CandidateSpan:
     start_index: int
     end_index: int  
-    
     start_time: float
     end_time: float
 
@@ -74,47 +61,27 @@ class CandidateSpan:
 
 
 def enumerate_candidate_spans(
-    starts: np.ndarray,
-    ends: np.ndarray,
-    max_span_segments: int,
-    max_span_seconds: float,
+    starts: np.ndarray, ends: np.ndarray,
+    max_span_segments: int, max_span_seconds: float,
 ) -> list[CandidateSpan]:
     starts = np.asarray(starts, dtype=np.float64)
     ends = np.asarray(ends, dtype=np.float64)
-
-    spans: list[CandidateSpan] = []
-
+    if not (1 <= max_span_segments and max_span_seconds > 0):
+        raise ValueError("Invalid span limits")
+    spans = []
     for a in range(len(starts)):
-        max_b = min(len(starts), a + max_span_segments)
-
-        for b in range(a + 1, max_b + 1):
-            start = float(starts[a])
-            end = float(ends[b - 1])
-
+        for b in range(a + 1, min(len(starts), a + max_span_segments) + 1):
+            start, end = float(starts[a]), float(ends[b - 1])
             if end <= start:
                 continue
-
             if end - start > max_span_seconds:
                 break
-
-            spans.append(
-                CandidateSpan(
-                    start_index=a,
-                    end_index=b,
-                    start_time=start,
-                    end_time=end,
-                )
-            )
-
+            spans.append(CandidateSpan(a, b, start, end))
     return spans
 
 
-def interval_iou(
-    start_a: float,
-    end_a: float,
-    start_b: float,
-    end_b: float,
-) -> float:
+def interval_iou(start_a: float, end_a: float,
+                 start_b: float, end_b: float) -> float:
     inter = max(0.0, min(end_a, end_b) - max(start_a, start_b))
     if inter <= 0.0:
         return 0.0
@@ -122,31 +89,14 @@ def interval_iou(
     return inter / union if union > 0 else 0.0
 
 
-def temporal_prior(
-    spans: list[CandidateSpan],
-    rough_start: float,
-    rough_end: float,
-    sigma_seconds: float,
-    duration_weight: float,
-) -> np.ndarray:
-    rough_mid = (rough_start + rough_end) / 2.0
-    rough_duration = max(1e-3, rough_end - rough_start)
+def temporal_prior(spans: list[CandidateSpan],
+                   rough_start: float, rough_end: float,
+                   sigma_seconds: float, duration_weight: float) -> np.ndarray:
+    mid = (rough_start + rough_end) / 2.0
+    duration = max(1e-3, rough_end - rough_start)
     sigma = max(1e-3, sigma_seconds)
-
-    values = []
-
-    for span in spans:
-        midpoint_term = -0.5 * (
-            (span.midpoint - rough_mid) / sigma
-        ) ** 2
-
-        duration_term = -duration_weight * abs(
-            np.log(
-                max(span.duration, 1e-3)
-                / rough_duration
-            )
-        )
-
-        values.append(midpoint_term + duration_term)
-
-    return np.asarray(values, dtype=np.float32)
+    return np.asarray([
+        -0.5 * ((s.midpoint - mid) / sigma) ** 2
+        - duration_weight * abs(np.log(max(s.duration, 1e-3) / duration))
+        for s in spans
+    ], dtype=np.float32)
