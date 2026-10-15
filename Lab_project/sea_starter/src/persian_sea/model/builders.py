@@ -31,5 +31,13 @@ visual_backends.register("pose_rgb", _build_pose_rgb)
 visual_backends.register("pose_only", lambda **kwargs: PoseOnlyVisualEncoder(**kwargs))
 
 
+def _build_pose_rgb_motion(**kwargs):
+    from persian_sea.model.motion_encoder import PoseRGBMotionVisualEncoder
+    return PoseRGBMotionVisualEncoder(**kwargs)
+
+
+visual_backends.register("pose_rgb_motion", _build_pose_rgb_motion)
+
+
 def build_visual_encoder(backend: str, **kwargs):
     return visual_backends.create(backend, **kwargs)
